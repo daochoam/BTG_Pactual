@@ -47,3 +47,11 @@ coverage.xml
 *.pytest_cache/
 
 .serverless/
+
+# Frontend (si se agrega)
+frontend/node_modules/
+frontend/dist/
+
+# Identidad de AWS de este proyecto (nunca se versiona)
+.aws.env
+.aws.local

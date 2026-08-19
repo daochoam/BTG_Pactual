@@ -1,0 +1,57 @@
+version: 0.2
+
+# Lo ejecuta el proyecto de CodeBuild que crea infra/codepipeline.yml.
+# El rol de CodeBuild ya trae los permisos: aqui no hay credenciales.
+
+env:
+  variables:
+    STAGE: prod
+    PYTHON_VERSION: '3.12'
+
+# Los secretos (JWT, SES, SMTP) los resuelve serverless.yml desde SSM Parameter
+# Store en /<servicio>/<stage>/*, usando el rol de CodeBuild. Aqui no hay
+# ninguna credencial.
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+      nodejs: 20
+    commands:
+      - npm ci
+      - pip install --quiet -r requirements.txt
+
+  pre_build:
+    commands:
+      - pytest -q
+      - python scripts/generate_dynamodb_resources.py --check
+
+  build:
+    commands:
+      - python scripts/generate_dynamodb_resources.py
+      - npx serverless deploy --stage "$STAGE" --verbose
+
+  post_build:
+    commands:
+      - npx serverless info --stage "$STAGE"
+      - |
+        if [ -f frontend/package.json ]; then
+          (cd frontend && npm ci && npm run build)
+          STACK="fastapi-app-$STAGE"
+          BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='StaticSiteBucketName'].OutputValue" --output text)
+          DIST=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='StaticSiteDistributionId'].OutputValue" --output text)
+          aws s3 sync frontend/dist "s3://$BUCKET" --delete \
+            --cache-control 'public,max-age=31536000,immutable' --exclude index.html
+          aws s3 cp frontend/dist/index.html "s3://$BUCKET/index.html" \
+            --cache-control 'no-cache,no-store,must-revalidate'
+          aws cloudfront create-invalidation --distribution-id "$DIST" --paths '/*'
+        else
+          echo "Sin carpeta frontend/: se omite la publicacion del sitio."
+        fi
+
+cache:
+  paths:
+    - node_modules/**/*
+    - /root/.cache/pip/**/*

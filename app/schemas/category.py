@@ -1,11 +1,14 @@
 import uuid
-from app.config import dynamodb
+from app.models import DynamoModel
 from app.utils.time import get_current_time
 
-class CategorySchema:
+class CategorySchema(DynamoModel):
     """
     Schema para representar una categoría en DynamoDB.
     """
+
+    table_name = "Categories"
+    partition_key = "id"
 
     def __init__(self, user_created: str, name: str, description: str=None, user_updated: str=None, created_at: str=None):
         self.id = str(uuid.uuid4())
@@ -39,5 +42,5 @@ class CategorySchema:
             updated_at=data["updated_at"]
         )
 
-categories_db = dynamodb.Table("Categories")
+categories_db = CategorySchema.table
 __all__ = ["categories_db", "CategorySchema"]

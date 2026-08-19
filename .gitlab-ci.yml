@@ -1,0 +1,109 @@
+# Despliegue continuo en GitLab CI usando OIDC: no se guardan access keys,
+# el job pide un token y asume el rol creado por infra/bootstrap.yml.
+#
+# Variables del proyecto (Settings > CI/CD > Variables):
+#   AWS_DEPLOY_ROLE_ARN  -> salida GitLabDeployRoleArn del stack de bootstrap
+#   JWT_SECRET_KEY, SES_VERIFIED_EMAIL, AWS_SMTP_*  (marcadas como Masked)
+
+stages: [test, deploy, frontend]
+
+variables:
+  AWS_REGION: us-east-2
+  PYTHON_IMAGE: python:3.12-slim
+  NODE_IMAGE: node:20
+
+default:
+  interruptible: true
+
+# --- Autenticación compartida ------------------------------------------------
+.aws_oidc:
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl unzip >/dev/null
+    - curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscli.zip
+    - unzip -q awscli.zip && ./aws/install >/dev/null
+    - |
+      CREDS=$(aws sts assume-role-with-web-identity \
+        --role-arn "$AWS_DEPLOY_ROLE_ARN" \
+        --role-session-name "gitlab-$CI_PIPELINE_ID" \
+        --web-identity-token "$GITLAB_OIDC_TOKEN" \
+        --duration-seconds 3600 \
+        --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+        --output text)
+      export AWS_ACCESS_KEY_ID=$(echo "$CREDS" | cut -f1)
+      export AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | cut -f2)
+      export AWS_SESSION_TOKEN=$(echo "$CREDS" | cut -f3)
+
+# --- Tests -------------------------------------------------------------------
+test:
+  stage: test
+  image: $PYTHON_IMAGE
+  script:
+    - pip install --quiet -r requirements.txt
+    - pytest -q
+    - python scripts/generate_dynamodb_resources.py --check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH
+
+# --- Despliegue --------------------------------------------------------------
+.deploy_base:
+  extends: .aws_oidc
+  stage: deploy
+  image: $NODE_IMAGE
+  script:
+    - apt-get install -y -qq python3 python3-pip >/dev/null
+    - pip3 install --quiet --break-system-packages -r requirements.txt
+    - npm ci
+    - python3 scripts/generate_dynamodb_resources.py
+    - npx serverless deploy --stage "$STAGE" --verbose
+    - npx serverless info --stage "$STAGE"
+
+deploy:dev:
+  extends: .deploy_base
+  variables:
+    STAGE: dev
+  environment:
+    name: development
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'develop'
+
+deploy:prod:
+  extends: .deploy_base
+  variables:
+    STAGE: prod
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Frontend a S3 + CloudFront ---------------------------------------------
+frontend:
+  extends: .aws_oidc
+  stage: frontend
+  image: $NODE_IMAGE
+  script:
+    - |
+      if [ ! -f frontend/package.json ]; then
+        echo "Sin carpeta frontend/: se omite la publicacion del sitio."
+        exit 0
+      fi
+    - (cd frontend && npm ci && npm run build)
+    - |
+      STACK="fastapi-app-$STAGE"
+      BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+        --query "Stacks[0].Outputs[?OutputKey=='StaticSiteBucketName'].OutputValue" --output text)
+      DIST=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+        --query "Stacks[0].Outputs[?OutputKey=='StaticSiteDistributionId'].OutputValue" --output text)
+
+      aws s3 sync frontend/dist "s3://$BUCKET" --delete \
+        --cache-control 'public,max-age=31536000,immutable' --exclude index.html
+      aws s3 cp frontend/dist/index.html "s3://$BUCKET/index.html" \
+        --cache-control 'no-cache,no-store,must-revalidate'
+      aws cloudfront create-invalidation --distribution-id "$DIST" --paths '/*'
+  variables:
+    STAGE: prod
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

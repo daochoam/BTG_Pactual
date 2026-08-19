@@ -1,0 +1,167 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PlanoDeControl",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:*",
+        "lambda:*",
+        "apigateway:*",
+        "logs:*",
+        "cognito-idp:*",
+        "cloudfront:*",
+        "sts:GetCallerIdentity",
+        "dynamodb:ListTables",
+        "s3:ListAllMyBuckets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "TablasDelServicio",
+      "Effect": "Allow",
+      "Action": "dynamodb:*",
+      "Resource": [
+        "arn:aws:dynamodb:*:<AWS_ACCOUNT_ID>:table/fastapi-app-*",
+        "arn:aws:dynamodb:*:<AWS_ACCOUNT_ID>:table/fastapi-app-*/index/*"
+      ]
+    },
+    {
+      "Sid": "BucketsDelServicioYDeArtefactos",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::fastapi-app-*",
+        "arn:aws:s3:::fastapi-app-*/*",
+        "arn:aws:s3:::serverless-framework-deployments-*",
+        "arn:aws:s3:::serverless-framework-deployments-*/*"
+      ]
+    },
+    {
+      "Sid": "ParametrosEnSSM",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath",
+        "ssm:DeleteParameter",
+        "ssm:DescribeParameters",
+        "ssm:AddTagsToResource"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*:<AWS_ACCOUNT_ID>:parameter/fastapi-app/*",
+        "arn:aws:ssm:*:<AWS_ACCOUNT_ID>:parameter/serverless-framework/*"
+      ]
+    },
+    {
+      "Sid": "DescifrarSecretosDeSSM",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.us-east-2.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "CodePipelineYCodeBuild",
+      "Effect": "Allow",
+      "Action": [
+        "codepipeline:*",
+        "codebuild:*"
+      ],
+      "Resource": [
+        "arn:aws:codepipeline:*:<AWS_ACCOUNT_ID>:fastapi-app-*",
+        "arn:aws:codebuild:*:<AWS_ACCOUNT_ID>:project/fastapi-app-*"
+      ]
+    },
+    {
+      "Sid": "ListadosDeCodePipeline",
+      "Effect": "Allow",
+      "Action": [
+        "codepipeline:ListPipelines",
+        "codebuild:ListProjects",
+        "codeconnections:CreateConnection",
+        "codeconnections:GetConnection",
+        "codeconnections:ListConnections",
+        "codeconnections:PassConnection",
+        "codeconnections:UseConnection",
+        "codeconnections:TagResource",
+        "codestar-connections:CreateConnection",
+        "codestar-connections:GetConnection",
+        "codestar-connections:ListConnections",
+        "codestar-connections:PassConnection",
+        "codestar-connections:UseConnection"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AvisosDeFalloDelPipeline",
+      "Effect": "Allow",
+      "Action": [
+        "sns:*",
+        "events:*"
+      ],
+      "Resource": [
+        "arn:aws:sns:*:<AWS_ACCOUNT_ID>:fastapi-app-*",
+        "arn:aws:events:*:<AWS_ACCOUNT_ID>:rule/fastapi-app-*"
+      ]
+    },
+    {
+      "Sid": "RolesDelServicio",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:UpdateRole"
+      ],
+      "Resource": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/fastapi-app-*"
+    },
+    {
+      "Sid": "PoliticaGestionadaDelServicio",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:TagPolicy"
+      ],
+      "Resource": "arn:aws:iam::<AWS_ACCOUNT_ID>:policy/fastapi-app-*"
+    },
+    {
+      "Sid": "ProveedoresOIDCParaElCI",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateOpenIDConnectProvider",
+        "iam:DeleteOpenIDConnectProvider",
+        "iam:GetOpenIDConnectProvider",
+        "iam:ListOpenIDConnectProviders",
+        "iam:TagOpenIDConnectProvider",
+        "iam:UpdateOpenIDConnectProviderThumbprint"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

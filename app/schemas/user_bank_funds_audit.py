@@ -1,11 +1,16 @@
 import uuid
-from app.config import dynamodb
+from app.models import GSI
 from app.schemas.user_bank_funds import UserBankFundsSchema
 
 from app.utils.time import get_current_time
 
 
 class UserBankFundsAuditSchema(UserBankFundsSchema):
+    # Hereda el comportamiento pero vive en su propia tabla.
+    table_name = "UserBankFundsAudit"
+    partition_key = "id"
+    indexes = (GSI("parent_id"), GSI("user_id"))
+
     # Llamamos al constructor padre con los campos que necesita
     def __init__(self, parent: UserBankFundsSchema):
         super().__init__(user_id=parent.user_id, bank_funds_id=parent.bank_funds_id, status=parent.status, amount=parent.amount, created_at=parent.created_at)
@@ -28,5 +33,5 @@ class UserBankFundsAuditSchema(UserBankFundsSchema):
             parent=UserBankFundsSchema.from_dict(data["parent"])
         )
 
-user_bank_funds_audit_db = dynamodb.Table("UserBankFundsAudit")
+user_bank_funds_audit_db = UserBankFundsAuditSchema.table
 __all__ = ["user_bank_funds_audit_db", "UserBankFundsAuditSchema"]

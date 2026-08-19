@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DespliegueDelProyecto",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:*",
+        "lambda:*",
+        "apigateway:*",
+        "logs:*",
+        "dynamodb:*",
+        "cognito-idp:*",
+        "cloudfront:*",
+        "s3:*",
+        "ssm:*",
+        "kms:Decrypt",
+        "iam:*",
+        "sts:*",
+        "codebuild:*",
+        "codepipeline:*",
+        "codeconnections:*",
+        "codestar-connections:*",
+        "sns:*",
+        "events:*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

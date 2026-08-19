@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Despliegue continuo integramente dentro de AWS: CodePipeline dispara CodeBuild
+  en cada push a la rama indicada, y CodeBuild ejecuta buildspec.yml
+  (serverless deploy). Requiere el stack infra/bootstrap.yml desplegado, del que
+  importa la politica de permisos.
+
+    aws cloudformation deploy
+      --template-file infra/codepipeline.yml
+      --stack-name fastapi-app-pipeline
+      --capabilities CAPABILITY_NAMED_IAM
+      --parameter-overrides
+          ConnectionArn=arn:aws:codeconnections:...
+          RepositoryId=mi-org/mi-repo
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: fastapi-app
+
+  Stage:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+
+  ConnectionArn:
+    Type: String
+    Description: >
+      ARN de la conexion a GitHub/Bitbucket (CodeConnections). Es el unico paso
+      que exige un handshake OAuth en la consola: Developer Tools > Settings >
+      Connections. Se crea una vez y sirve para todos los pipelines.
+
+  RepositoryId:
+    Type: String
+    Description: owner/repo
+
+  BranchName:
+    Type: String
+    Default: main
+
+  BuildImage:
+    Type: String
+    Default: aws/codebuild/standard:7.0
+
+  NotificationEmail:
+    Type: String
+    Default: ''
+    Description: Vacio = sin avisos de fallo del pipeline.
+
+Conditions:
+  HasNotification: !Not [!Equals [!Ref NotificationEmail, '']]
+
+Resources:
+  # -- Artefactos ------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ServiceName}-${Stage}-pipeline-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: caducar-artefactos
+            Status: Enabled
+            ExpirationInDays: 30
+
+  # -- CodeBuild -------------------------------------------------------------
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ServiceName}-${Stage}-codebuild'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Los permisos de despliegue se definen una sola vez, en bootstrap.yml.
+        - !ImportValue
+          Fn::Sub: '${ServiceName}-deploy-policy-arn'
+      Policies:
+        - PolicyName: build
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub '${ArtifactBucket.Arn}/*'
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ServiceName}-${Stage}-deploy'
+      ServiceRole: !GetAtt BuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref BuildImage
+        # `dockerizePip: true` en serverless.yml necesita Docker.
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: STAGE
+            Value: !Ref Stage
+      TimeoutInMinutes: 30
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+
+  # -- CodePipeline ----------------------------------------------------------
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ServiceName}-${Stage}-codepipeline'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: pipeline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                  - codeconnections:UseConnection
+                Resource: !Ref ConnectionArn
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${ServiceName}-${Stage}'
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref ConnectionArn
+                FullRepositoryId: !Ref RepositoryId
+                BranchName: !Ref BranchName
+                DetectChanges: true
+              OutputArtifacts:
+                - Name: source
+
+        - Name: Deploy
+          Actions:
+            - Name: ServerlessDeploy
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: source
+
+  # -- Avisos de fallo -------------------------------------------------------
+  FailureTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasNotification
+    Properties:
+      TopicName: !Sub '${ServiceName}-${Stage}-pipeline-alerts'
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref NotificationEmail
+
+  FailureTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: HasNotification
+    Properties:
+      Topics:
+        - !Ref FailureTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref FailureTopic
+
+  FailureRule:
+    Type: AWS::Events::Rule
+    Condition: HasNotification
+    Properties:
+      Description: Avisa cuando el pipeline falla.
+      EventPattern:
+        source: ['aws.codepipeline']
+        detail-type: ['CodePipeline Pipeline Execution State Change']
+        detail:
+          state: ['FAILED']
+          pipeline: [!Ref Pipeline]
+      Targets:
+        - Id: sns
+          Arn: !Ref FailureTopic
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
+  PipelineUrl:
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${Pipeline}/view'
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket

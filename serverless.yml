@@ -1,58 +1,238 @@
 service: fastapi-app
+frameworkVersion: '4'
+
+# Serverless v4 carga `.env` y `.env.<stage>` de forma nativa para resolver
+# ${env:...}. A diferencia del antiguo serverless-dotenv-plugin, no vuelca ese
+# archivo en el entorno de la Lambda: alli solo llega lo que declara
+# `provider.environment`.
+
+# ---------------------------------------------------------------------------
+# TODA la infraestructura (DynamoDB + Cognito) se declara en resources/.
+# `serverless deploy` la crea si no existe y la actualiza si ya existe.
+# Para desplegar basta con:  npx serverless deploy --stage prod
+# ---------------------------------------------------------------------------
 
 provider:
   name: aws
   runtime: python3.12
-  region: us-east-2
-  memorySize: 128
-  timeout: 10
-  deploymentBucket:
-    name: btg-pactual-deploy
-  iamRoleStatements:
-      - Effect: Allow
-        Action:
-          - dynamodb:*
-        Resource: "*"
-  managedPolicyArns:
-    - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+  region: ${opt:region, env:AWS_DEPLOY_REGION, 'us-east-2'}
+  stage: ${opt:stage, 'prod'}
+  memorySize: 512
+  timeout: 29
+  architecture: x86_64
+  logRetentionInDays: 14
+
+  httpApi:
+    # CORS resuelto en API Gateway: el preflight OPTIONS se contesta sin
+    # invocar la Lambda. Por eso la app NO lleva CORSMiddleware: duplicaría
+    # las cabeceras y el navegador rechazaría la respuesta.
+    cors:
+      allowedOrigins:
+        - ${env:CORS_ALLOWED_ORIGIN, '*'}
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+        - X-Refresh-Token
+      allowedMethods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      # Sin esto el navegador no puede leer los tokens que devuelve el login.
+      exposedResponseHeaders:
+        - Authorization
+        - X-Refresh-Token
+      maxAge: 86400
+    metrics: true
+
+  logs:
+    httpApi:
+      format: >-
+        {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","protocol":"$context.protocol","latency":"$context.responseLatency","integrationStatus":"$context.integrationStatus","integrationError":"$context.integrationErrorMessage"}
+  # Sin `deploymentBucket`: Serverless crea y gestiona el bucket de artefactos
+  # por su cuenta. Así no hay ningún bucket que crear a mano antes del primer
+  # despliegue.
+
   environment:
     ENVIRONMENT_MODE: production
-    DYNAMO_TABLE: ${env:DYNAMO_TABLE}
-    AWS_COGNITO_CLIENT_ID: ${env:AWS_COGNITO_CLIENT_ID}
-    AWS_COGNITO_CLIENT_SECRET: ${env:AWS_COGNITO_CLIENT_SECRET}
-    AWS_COGNITO_DOMAIN: ${env:AWS_COGNITO_DOMAIN}
-    AWS_COGNITO_USER_POOL_ID: ${env:AWS_COGNITO_USER_POOL_ID}
-    SES_VERIFIED_EMAIL: ${env:SES_VERIFIED_EMAIL}
-    AWS_SMTP_HOST: ${env:AWS_SMTP_HOST}
-    AWS_SMTP_PORT: ${env:AWS_SMTP_PORT}
-    AWS_SMTP_USER: ${env:AWS_SMTP_USER}
-    AWS_SMTP_PASS: ${env:AWS_SMTP_PASS}
-    JWT_SECRET_KEY: ${env:JWT_SECRET_KEY}
-    JWT_EXPIRE_MINUTES: ${env:JWT_EXPIRE_MINUTES}
-    JWT_ALGORITHM: ${env:JWT_ALGORITHM}
-    TIME_ZONE: ${env:TIME_ZONE}
+    STAGE: ${sls:stage}
+
+    # --- DynamoDB: nombres resueltos por CloudFormation, no hardcodeados ---
+    TABLE_PREFIX: ${self:custom.tablePrefix}
+    DYNAMO_TABLE_USERS: !Ref UsersTable
+    DYNAMO_TABLE_CATEGORIES: !Ref CategoriesTable
+    DYNAMO_TABLE_BANK_FUNDS: !Ref BankFundsTable
+    DYNAMO_TABLE_USER_BANK_FUNDS: !Ref UserBankFundsTable
+    DYNAMO_TABLE_USER_BANK_FUNDS_AUDIT: !Ref UserBankFundsAuditTable
+    # Compatibilidad con la variable antigua
+    DYNAMO_TABLE: !Ref UsersTable
+
+    # --- Cognito: ids inyectados por CloudFormation, no se copian a mano ---
+    AWS_COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+    AWS_COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
+    AWS_COGNITO_CLIENT_SECRET: !GetAtt CognitoUserPoolClient.ClientSecret
+    AWS_COGNITO_DOMAIN: ${self:custom.cognito.domainUrl}
+
+    # --- S3 / CDN: creados por CloudFormation ---
+    S3_UPLOADS_BUCKET: !Ref UploadsBucket
+    S3_STATIC_SITE_BUCKET: !Ref StaticSiteBucket
+    CDN_URL: !Join ['', ['https://', !GetAtt StaticSiteDistribution.DomainName]]
+
+    # --- Secretos de negocio ---
+    # Orden de resolución: variable de entorno (útil en local) y si no existe,
+    # SSM Parameter Store. Así el CI no necesita conocer ningún secreto: basta
+    # con que el rol de despliegue pueda leer /<servicio>/<stage>/*.
+    SES_VERIFIED_EMAIL: ${env:SES_VERIFIED_EMAIL, ssm:${self:custom.secretsPath}/SES_VERIFIED_EMAIL, ''}
+    AWS_SMTP_HOST: ${env:AWS_SMTP_HOST, ssm:${self:custom.secretsPath}/AWS_SMTP_HOST, ''}
+    AWS_SMTP_PORT: ${env:AWS_SMTP_PORT, '587'}
+    AWS_SMTP_USER: ${env:AWS_SMTP_USER, ssm:${self:custom.secretsPath}/AWS_SMTP_USER, ''}
+    AWS_SMTP_PASS: ${env:AWS_SMTP_PASS, ssm:${self:custom.secretsPath}/AWS_SMTP_PASS, ''}
+    JWT_SECRET_KEY: ${env:JWT_SECRET_KEY, ssm:${self:custom.secretsPath}/JWT_SECRET_KEY}
+    JWT_EXPIRE_MINUTES: ${env:JWT_EXPIRE_MINUTES, '30'}
+    JWT_ALGORITHM: ${env:JWT_ALGORITHM, 'HS256'}
+    TIME_ZONE: ${env:TIME_ZONE, 'UTC'}
+
+    # Red de seguridad: si por alguna razón faltara una tabla en runtime, la
+    # app la crea sola en el arranque en frío. Poner 'false' para desactivar.
+    AUTO_CREATE_TABLES: ${env:AUTO_CREATE_TABLES, 'true'}
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:BatchGetItem
+            - dynamodb:PutItem
+            - dynamodb:BatchWriteItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:DescribeTable
+            - dynamodb:CreateTable
+            - dynamodb:UpdateTable
+            - dynamodb:ListTables
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:${aws:accountId}:table/${self:custom.tablePrefix}*
+            - arn:aws:dynamodb:${self:provider.region}:${aws:accountId}:table/${self:custom.tablePrefix}*/index/*
+
+        - Effect: Allow
+          Action:
+            - cognito-idp:DescribeUserPool
+            - cognito-idp:DescribeUserPoolClient
+            - cognito-idp:AdminGetUser
+            - cognito-idp:AdminUpdateUserAttributes
+            - cognito-idp:AdminConfirmSignUp
+            - cognito-idp:AdminDeleteUser
+            - cognito-idp:AdminDisableUser
+            - cognito-idp:AdminEnableUser
+            - cognito-idp:ListUsers
+          Resource:
+            - !GetAtt CognitoUserPool.Arn
+
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:AbortMultipartUpload
+          Resource:
+            - !Join ['', [!GetAtt UploadsBucket.Arn, '/*']]
+
+        - Effect: Allow
+          Action:
+            - s3:ListBucket
+            - s3:GetBucketLocation
+          Resource:
+            - !GetAtt UploadsBucket.Arn
+
+        - Effect: Allow
+          Action:
+            - ses:SendEmail
+            - ses:SendRawEmail
+          Resource: '*'
 
 functions:
   app:
-    handler: app/handler.handler  # Tu archivo handler.py con Mangum
+    handler: app/handler.handler
+    description: API FastAPI servida por Mangum sobre API Gateway HTTP API.
     events:
-      - httpApi: '*'               # API Gateway HTTP API, cualquier ruta
+      # Ruta $default: FastAPI ya tiene su propio router, así que declarar aquí
+      # cada endpoint solo duplicaría el enrutado y habría que mantener los dos
+      # en sincronía. El 404 lo devuelve FastAPI.
+      - httpApi:
+          method: '*'
+          path: /{proxy+}
+      # $default no cubre la raíz; sin esto, GET / daría 404 de API Gateway.
+      - httpApi:
+          method: '*'
+          path: /
     layers:
       - !Ref PythonRequirementsLambdaLayer
 
 package:
-  exclude:
-    - .env
-    - .serverless/**
-    - node_modules/**
-    - env/**
+  patterns:
+    - '!.env'
+    - '!.env.*'
+    - '!.serverless/**'
+    - '!node_modules/**'
+    - '!env/**'
+    - '!venv/**'
+    - '!.venv/**'
+    - '!tests/**'
+    - '!**/__pycache__/**'
+    - '!*.drawio'
+    - '!package-lock.json'
+    - '!README.md'
 
 plugins:
   - serverless-python-requirements
-  - serverless-dotenv-plugin
   - serverless-offline
 
 custom:
+  # Prefijo de las tablas: aísla stages (dev/staging/prod) en la misma cuenta.
+  # Si necesitas conservar los nombres antiguos ("Users", "Categories", ...),
+  # deja tablePrefix vacío -> tablePrefix: ''
+  tablePrefix: ${self:service}-${sls:stage}-
+
+  # Prefijo en SSM Parameter Store de donde se leen los secretos.
+  secretsPath: /${self:service}/${sls:stage}
+
+  # Los nombres de bucket son únicos a nivel global: se les añade el accountId.
+  buckets:
+    uploads: ${self:service}-${sls:stage}-uploads-${aws:accountId}
+    static: ${self:service}-${sls:stage}-web-${aws:accountId}
+
+  cors:
+    # Añade aquí más orígenes si el frontend se sirve desde varios dominios.
+    origins:
+      - ${env:CORS_ALLOWED_ORIGIN, '*'}
+
+  api:
+    rateLimit: ${env:API_RATE_LIMIT, '100'}
+    burstLimit: ${env:API_BURST_LIMIT, '200'}
+
+  cdn:
+    # PriceClass_100 = solo Norteamérica y Europa (el más barato).
+    priceClass: ${env:CDN_PRICE_CLASS, 'PriceClass_100'}
+
+  # Point-in-time recovery solo en prod (en dev genera costo innecesario)
+  pitr:
+    prod: true
+    default: false
+
+  cognito:
+    userPoolName: ${self:service}-${sls:stage}-user-pool
+    clientName: ${self:service}-${sls:stage}-client
+    domainPrefix: ${self:service}-${sls:stage}-${aws:accountId}
+    domainUrl: ${self:custom.cognito.domainPrefix}.auth.${self:provider.region}.amazoncognito.com
+    deletionProtection:
+      prod: ACTIVE
+      default: INACTIVE
+
   pythonRequirements:
     dockerizePip: true
     layer:
@@ -60,3 +240,11 @@ custom:
       compatibility: python3.12
     slim: false              # Evita eliminar metadata de paquetes (ej: email-validator)
     invalidateCaches: true   # Fuerza regeneración de layer
+
+resources:
+  # dynamodb.yml se GENERA desde los modelos:
+  #   python scripts/generate_dynamodb_resources.py   (o `npm run deploy`)
+  - ${file(resources/dynamodb.yml)}
+  - ${file(resources/cognito.yml)}
+  - ${file(resources/s3.yml)}
+  - ${file(resources/api.yml)}

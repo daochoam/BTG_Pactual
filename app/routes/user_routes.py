@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.config import dynamodb
 from app.controllers.user_controller import get_all_users_controller
 from app.controllers.auth_decorators import auth_required
 from app.documents.auth_models import SessionUserModel
+from app.schemas.users import users_db
 
-users_db = dynamodb.Table("Users")
 users_routes = APIRouter(prefix="/users",tags=["users"])
 
 @users_routes.get("/")

@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Ajustes del stage de API Gateway que Serverless no expone como opción.
+#
+# `extensions` no crea recursos: parchea el que Serverless ya genera
+# (HttpApiStage). Si una versión futura de Serverless cambiara ese id lógico,
+# el despliegue fallaría con "Unrecognized resource" y bastaría con borrar
+# este archivo de la lista `resources` de serverless.yml.
+# ---------------------------------------------------------------------------
+
+extensions:
+  HttpApiStage:
+    Properties:
+      DefaultRouteSettings:
+        # Límite por defecto de la cuenta: 10.000 rps. Esto acota el gasto y
+        # el radio de una avalancha de peticiones sobre una Lambda con
+        # reserva de concurrencia compartida.
+        ThrottlingRateLimit: ${self:custom.api.rateLimit}
+        ThrottlingBurstLimit: ${self:custom.api.burstLimit}
+        DetailedMetricsEnabled: true

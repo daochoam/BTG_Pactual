@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketDeArtefactosDeServerless",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:AddTagsToResource"
+      ],
+      "Resource": "arn:aws:ssm:*:<AWS_ACCOUNT_ID>:parameter/serverless-framework/*"
+    }
+  ]
+}
