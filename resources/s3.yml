@@ -1,0 +1,187 @@
+# ---------------------------------------------------------------------------
+# Almacenamiento S3 + CDN.
+#
+#   - UploadsBucket: privado, para archivos que maneje la API.
+#   - StaticSiteBucket + CloudFront: hosting del frontend. El bucket NO es
+#     público; solo CloudFront puede leerlo (Origin Access Control).
+#
+# DeletionPolicy Retain: un bucket con objetos bloquearía el borrado del stack
+# y, sobre todo, los datos no deben irse con un `serverless remove`.
+# ---------------------------------------------------------------------------
+
+Resources:
+  # -- Archivos de la aplicación --------------------------------------------
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: ${self:custom.buckets.uploads}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: abortar-multipart-incompletas
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: caducar-versiones-antiguas
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedOrigins: ${self:custom.cors.origins}
+            MaxAge: 3000
+      Tags:
+        - Key: Service
+          Value: ${self:service}
+        - Key: Stage
+          Value: ${sls:stage}
+
+  UploadsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref UploadsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: DenegarTransporteInseguro
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt UploadsBucket.Arn
+              - !Join ['', [!GetAtt UploadsBucket.Arn, '/*']]
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  # -- Hosting del frontend --------------------------------------------------
+  StaticSiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: ${self:custom.buckets.static}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Service
+          Value: ${self:service}
+        - Key: Stage
+          Value: ${sls:stage}
+
+  StaticSiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: ${self:service}-${sls:stage}-static-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  StaticSiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: ${self:service}-${sls:stage} frontend
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: ${self:custom.cdn.priceClass}
+        Origins:
+          - Id: static-site
+            DomainName: !GetAtt StaticSiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt StaticSiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: static-site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          # Managed-CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CustomErrorResponses:
+          # Rutas de una SPA: el 403/404 de S3 devuelve el index para que el
+          # router del frontend resuelva la ruta.
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+      Tags:
+        - Key: Service
+          Value: ${self:service}
+        - Key: Stage
+          Value: ${sls:stage}
+
+  StaticSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticSiteBucket
+      PolicyDocument:
+        Statement:
+          - Sid: SoloCloudFront
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Join ['', [!GetAtt StaticSiteBucket.Arn, '/*']]
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Join
+                  - ''
+                  - - 'arn:aws:cloudfront::'
+                    - !Ref 'AWS::AccountId'
+                    - ':distribution/'
+                    - !Ref StaticSiteDistribution
+          - Sid: DenegarTransporteInseguro
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt StaticSiteBucket.Arn
+              - !Join ['', [!GetAtt StaticSiteBucket.Arn, '/*']]
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+Outputs:
+  UploadsBucketName:
+    Value: !Ref UploadsBucket
+  StaticSiteBucketName:
+    Value: !Ref StaticSiteBucket
+  StaticSiteDistributionId:
+    Value: !Ref StaticSiteDistribution
+  StaticSiteUrl:
+    Value: !Join ['', ['https://', !GetAtt StaticSiteDistribution.DomainName]]

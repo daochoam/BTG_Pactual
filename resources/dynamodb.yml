@@ -1,0 +1,208 @@
+# ---------------------------------------------------------------------------
+# ARCHIVO GENERADO - no editar a mano.
+#
+# Se produce con:  python scripts/generate_dynamodb_resources.py
+# a partir de los modelos que heredan de DynamoModel (app/schemas, app/models).
+# Para añadir o cambiar una tabla, cambia el modelo y vuelve a generar.
+#
+# DeletionPolicy/UpdateReplacePolicy = Retain -> los datos nunca se borran,
+# ni al eliminar el stack ni si CloudFormation reemplaza el recurso.
+# ---------------------------------------------------------------------------
+
+Resources:
+  BankFundsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ${self:custom.tablePrefix}BankFunds
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      - AttributeName: category_id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+      - IndexName: category_id-index
+        KeySchema:
+        - AttributeName: category_id
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: ${self:custom.pitr.${sls:stage}, self:custom.pitr.default}
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+      - Key: Service
+        Value: ${self:service}
+      - Key: Stage
+        Value: ${sls:stage}
+      - Key: Model
+        Value: app.schemas.bank_funds.BankFundsSchema
+  CategoriesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ${self:custom.tablePrefix}Categories
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: ${self:custom.pitr.${sls:stage}, self:custom.pitr.default}
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+      - Key: Service
+        Value: ${self:service}
+      - Key: Stage
+        Value: ${sls:stage}
+      - Key: Model
+        Value: app.schemas.category.CategorySchema
+  UserBankFundsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ${self:custom.tablePrefix}UserBankFunds
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      - AttributeName: user_id
+        AttributeType: S
+      - AttributeName: bank_funds_id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+      - IndexName: user_id-index
+        KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      - IndexName: bank_funds_id-index
+        KeySchema:
+        - AttributeName: bank_funds_id
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: ${self:custom.pitr.${sls:stage}, self:custom.pitr.default}
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+      - Key: Service
+        Value: ${self:service}
+      - Key: Stage
+        Value: ${sls:stage}
+      - Key: Model
+        Value: app.schemas.user_bank_funds.UserBankFundsSchema
+  UserBankFundsAuditTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ${self:custom.tablePrefix}UserBankFundsAudit
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      - AttributeName: parent_id
+        AttributeType: S
+      - AttributeName: user_id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+      - IndexName: parent_id-index
+        KeySchema:
+        - AttributeName: parent_id
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      - IndexName: user_id-index
+        KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: ${self:custom.pitr.${sls:stage}, self:custom.pitr.default}
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+      - Key: Service
+        Value: ${self:service}
+      - Key: Stage
+        Value: ${sls:stage}
+      - Key: Model
+        Value: app.schemas.user_bank_funds_audit.UserBankFundsAuditSchema
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ${self:custom.tablePrefix}Users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      - AttributeName: email
+        AttributeType: S
+      - AttributeName: nit
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+      - IndexName: email-index
+        KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      - IndexName: nit-index
+        KeySchema:
+        - AttributeName: nit
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: ${self:custom.pitr.${sls:stage}, self:custom.pitr.default}
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+      - Key: Service
+        Value: ${self:service}
+      - Key: Stage
+        Value: ${sls:stage}
+      - Key: Model
+        Value: app.schemas.users.UserSchema
+Outputs:
+  BankFundsTableName:
+    Value:
+      Ref: BankFundsTable
+  CategoriesTableName:
+    Value:
+      Ref: CategoriesTable
+  UserBankFundsTableName:
+    Value:
+      Ref: UserBankFundsTable
+  UserBankFundsAuditTableName:
+    Value:
+      Ref: UserBankFundsAuditTable
+  UsersTableName:
+    Value:
+      Ref: UsersTable

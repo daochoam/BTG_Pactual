@@ -1,0 +1,44 @@
+# DynamoDB en local, para desarrollar sin tocar la cuenta de AWS.
+#
+#   docker compose up -d
+#
+# Luego, en el .env:
+#   DYNAMO_ENDPOINT_URL=http://localhost:8000
+#   AUTO_CREATE_TABLES=true
+#
+# Al arrancar la app, ensure_schema() crea ahi las tablas que declaran los
+# modelos. Los datos quedan en el volumen `dynamodb-data`; para empezar de
+# cero: docker compose down -v
+
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    container_name: btg-dynamodb-local
+    ports:
+      - '8000:8000'
+    command: ['-jar', 'DynamoDBLocal.jar', '-sharedDb', '-dbPath', './data']
+    working_dir: /home/dynamodblocal
+    volumes:
+      - dynamodb-data:/home/dynamodblocal/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -s -o /dev/null http://localhost:8000 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Interfaz web para inspeccionar las tablas: http://localhost:8001
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:latest
+    container_name: btg-dynamodb-admin
+    ports:
+      - '8001:8001'
+    environment:
+      DYNAMO_ENDPOINT: http://dynamodb:8000
+      AWS_REGION: us-east-2
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    depends_on:
+      - dynamodb
+
+volumes:
+  dynamodb-data:

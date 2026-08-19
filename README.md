@@ -2,6 +2,66 @@
 
 Este proyecto utiliza **FastAPI** para construir una API robusta con integración a servicios AWS y autenticación mediante Cognito.
 
+> **Despliegue:** la infraestructura (tablas DynamoDB y Cognito) se crea y se actualiza sola con `npx serverless deploy`.
+> No hay que provisionar nada a mano en la consola de AWS. Ver [DEPLOY.md](DEPLOY.md).
+> Las variables del `.env` de abajo son para **desarrollo local** (plantilla en [.env.example](.env.example)).
+>
+> Las tablas se declaran en los modelos: una clase que hereda de `DynamoModel` con su `table_name`
+> se registra sola y aparece en DynamoDB. Ver [DEPLOY.md](DEPLOY.md#las-tablas-salen-de-los-modelos).
+
+## Arranque rápido
+
+```bash
+python -m venv .venv
+.venv\Scripts\Activate.ps1          # Windows PowerShell
+# source .venv/bin/activate         # macOS / Linux
+
+pip install -r requirements.txt
+npm install                         # solo hace falta para desplegar
+
+cp .env.example .env
+docker compose up -d                # DynamoDB en local (puerto 8000)
+uvicorn app.main:app --reload --port 8080
+```
+
+> **Windows:** usa Python 3.12 (ver [.python-version](.python-version)). En 3.13+
+> varias dependencias con extensiones nativas (`cffi`, `cryptography`,
+> `pydantic-core`) no tienen wheels publicados y pip intenta compilarlas,
+> lo que exige Microsoft C++ Build Tools.
+>
+> Para **solo desplegar** no hace falta todo eso: la Lambda se empaqueta dentro
+> de Docker con python3.12. Basta con
+> `pip install boto3 pyyaml python-dotenv tzdata`, que son puros de Python y se
+> instalan en cualquier versión.
+
+Comprobar que responde:
+
+| URL | Qué es |
+|---|---|
+| http://localhost:8080/ | Saludo |
+| http://localhost:8080/health | Estado, stage y entorno |
+| http://localhost:8080/swagger | Documentación interactiva |
+| http://localhost:8001 | Explorador de las tablas de DynamoDB Local |
+
+La API va en el 8080 porque DynamoDB Local ocupa el 8000.
+
+Las tablas se crean solas al arrancar a partir de los modelos, porque
+`AUTO_CREATE_TABLES=true` viene puesto en el `.env`.
+
+**Sin Docker**: pon `AUTO_CREATE_TABLES=false` y comenta `DYNAMO_ENDPOINT_URL`.
+La API arranca igual y `/health`, `/swagger` y las rutas que no tocan datos
+funcionan; las que leen DynamoDB fallarán.
+
+> Cuidado: si comentas `DYNAMO_ENDPOINT_URL` **sin** poner
+> `AUTO_CREATE_TABLES=false`, la app creará las tablas en tu cuenta real de AWS
+> al arrancar, usando las credenciales que tengas configuradas.
+
+Tests:
+
+```bash
+pytest -q
+```
+
 ## Ejecución del Proyecto
 
 1. **Clona el repositorio:**
@@ -15,33 +75,22 @@ Este proyecto utiliza **FastAPI** para construir una API robusta con integració
   pip install -r requirements.txt
   ```
 
-3. **Configura las variables de entorno:**
+3. **Configura las variables de entorno (solo desarrollo local):**
 
-  Crea un archivo `.env` en la raíz del proyecto y agrega las siguientes variables:
+  ```bash
+  cp .env.example .env
+  ```
 
-  ```env
-  AWS_ACCESS_KEY_ID=           # ID de clave de acceso para AWS
-  AWS_SECRET_ACCESS_KEY=       # Clave secreta de acceso para AWS
-  AWS_REGION=                  # Región de AWS (ejemplo: us-east-1)
-  DYNAMO_TABLE=                # Nombre de la tabla DynamoDB
+  Están documentadas en [.env.example](.env.example). En AWS **no** hay que
+  rellenar los ids de DynamoDB, Cognito, S3 ni CloudFront: los inyecta
+  CloudFormation al desplegar, y los secretos (`JWT_SECRET_KEY`, SES, SMTP)
+  se leen de SSM Parameter Store. Ver [DEPLOY.md](DEPLOY.md).
 
-  AWS_COGNITO_CLIENT_ID=       # ID de cliente de la aplicación Cognito
-  AWS_COGNITO_CLIENT_SECRET=   # Secreto de cliente de Cognito
-  AWS_COGNITO_REDIRECT_URI=    # URI de redirección para autenticación Cognito
-  AWS_COGNITO_DOMAIN=          # Dominio de Cognito (ejemplo: tu-dominio.auth.us-east-1.amazoncognito.com)
-  AWS_COGNITO_USER_POOL_ID=    # ID del grupo de usuarios Cognito
+  Para desplegar desde tu equipo, además:
 
-  SES_VERIFIED_EMAIL=          # Email verificado en AWS SES para envío
-  AWS_SMTP_HOST=               # Host SMTP de AWS
-  AWS_SMTP_PORT=               # Puerto SMTP de AWS
-  AWS_SMTP_USER=               # Usuario SMTP de AWS
-  AWS_SMTP_PASS=               # Contraseña SMTP de AWS
-
-  JWT_SECRET_KEY=              # Clave secreta para firmar JWT
-  JWT_EXPIRE_MINUTES=          # Minutos de expiración del JWT
-  JWT_ALGORITHM=               # Algoritmo de cifrado JWT (ejemplo: HS256)
-
-  TIME_ZONE=                   # Zona horaria del proyecto (ejemplo: America/Mexico_City)
+  ```bash
+  cp .aws.env.example .aws.env   # dice qué perfil de AWS usar
+  npm run whoami                 # comprueba la identidad
   ```
 
 4. **Configuración de AWS Lambda para actualizar el estado `verified`:**

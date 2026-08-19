@@ -1,0 +1,106 @@
+# ---------------------------------------------------------------------------
+# Cognito gestionado por CloudFormation: User Pool + App Client + Dominio.
+#
+# El ClientId / ClientSecret / UserPoolId se inyectan solos en las variables
+# de entorno de la Lambda (ver provider.environment en serverless.yml), así que
+# NO hay que copiarlos al .env para producción.
+#
+# OJO: el atributo custom:role vive en `Schema`. Cognito NO permite modificar
+# ni eliminar atributos de schema despues de crear el pool; si se cambia,
+# CloudFormation intentaria reemplazar el pool. Por eso UpdateReplacePolicy y
+# DeletionPolicy estan en Retain: los usuarios existentes nunca se pierden.
+# ---------------------------------------------------------------------------
+
+Resources:
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: ${self:custom.cognito.userPoolName}
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: 'OFF'
+      DeletionProtection: ${self:custom.cognito.deletionProtection.${sls:stage}, self:custom.cognito.deletionProtection.default}
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+      Schema:
+        - Name: role
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+          StringAttributeConstraints:
+            MinLength: '0'
+            MaxLength: '20'
+      UserPoolTags:
+        Service: ${self:service}
+        Stage: ${sls:stage}
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: ${self:custom.cognito.clientName}
+      UserPoolId: !Ref CognitoUserPool
+      # El código usa SecretHash (app/utils/secret_hash.py) -> el client necesita secreto.
+      GenerateSecret: true
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+      ReadAttributes:
+        - email
+        - email_verified
+        - name
+        - family_name
+        - phone_number
+        - custom:role
+      WriteAttributes:
+        - email
+        - name
+        - family_name
+        - phone_number
+        - custom:role
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      # Debe ser único a nivel global de AWS -> se le añade el accountId.
+      Domain: ${self:custom.cognito.domainPrefix}
+      UserPoolId: !Ref CognitoUserPool
+
+Outputs:
+  CognitoUserPoolId:
+    Value: !Ref CognitoUserPool
+  CognitoUserPoolArn:
+    Value: !GetAtt CognitoUserPool.Arn
+  CognitoUserPoolClientId:
+    Value: !Ref CognitoUserPoolClient
+  CognitoUserPoolDomain:
+    Value: ${self:custom.cognito.domainUrl}

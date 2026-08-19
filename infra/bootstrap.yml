@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Arranque del despliegue continuo: proveedores OIDC y roles que asume el CI
+  para ejecutar "serverless deploy". Es lo unico que se crea una sola vez, y
+  tambien desde codigo:
+
+    aws cloudformation deploy
+      --template-file infra/bootstrap.yml
+      --stack-name fastapi-app-cicd-bootstrap
+      --capabilities CAPABILITY_NAMED_IAM
+      --parameter-overrides GitHubRepo=mi-org/mi-repo
+
+  No crea buckets de despliegue: Serverless gestiona el suyo.
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: fastapi-app
+    Description: Debe coincidir con el campo "service" de serverless.yml.
+
+  GitHubRepo:
+    Type: String
+    Default: ''
+    Description: owner/repo. Vacio = no se crea el rol de GitHub Actions.
+
+  GitHubRefFilter:
+    Type: String
+    Default: 'ref:refs/heads/main'
+    Description: >
+      Que ejecuciones pueden asumir el rol. Ejemplos:
+      ref:refs/heads/main | ref:refs/heads/* | environment:production | *
+
+  CreateGitHubOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Poner en false si la cuenta ya tiene el proveedor OIDC de GitHub.
+
+  GitLabProject:
+    Type: String
+    Default: ''
+    Description: grupo/proyecto. Vacio = no se crea el rol de GitLab CI.
+
+  GitLabHost:
+    Type: String
+    Default: 'gitlab.com'
+    Description: Host del emisor OIDC de GitLab, sin esquema.
+
+  CreateGitLabOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeveloperPrincipals:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >
+      ARNs de las identidades humanas que pueden desplegar a mano
+      (usuarios IAM o roles de IAM Identity Center). Vacio = no se crea el rol.
+      Ejemplo: arn:aws:iam::123456789012:user/daniel
+
+Conditions:
+  HasDevelopers: !Not [!Equals [!Join ['', !Ref DeveloperPrincipals], '']]
+  HasGitHub: !Not [!Equals [!Ref GitHubRepo, '']]
+  HasGitLab: !Not [!Equals [!Ref GitLabProject, '']]
+  MakeGitHubOidc: !And
+    - !Condition HasGitHub
+    - !Equals [!Ref CreateGitHubOidcProvider, 'true']
+  MakeGitLabOidc: !And
+    - !Condition HasGitLab
+    - !Equals [!Ref CreateGitLabOidcProvider, 'true']
+
+Resources:
+  # -- Proveedores OIDC ------------------------------------------------------
+  # AWS ya no valida el thumbprint de estos proveedores, pero la API sigue
+  # exigiendo el campo.
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeGitHubOidc
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  GitLabOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeGitLabOidc
+    Properties:
+      Url: !Sub 'https://${GitLabHost}'
+      ClientIdList:
+        - !Sub 'https://${GitLabHost}'
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  # -- Permisos de despliegue ------------------------------------------------
+  # Amplios a proposito: "serverless deploy" crea y actualiza CloudFormation,
+  # Lambda, API Gateway, IAM, DynamoDB, Cognito, S3 y CloudFront. Se acotan por
+  # nombre de recurso alli donde es posible.
+  DeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ServiceName}-deploy'
+      Description: Permisos para ejecutar serverless deploy de este servicio.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CloudFormation
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResource
+              - cloudformation:DescribeStackResources
+              - cloudformation:ListStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+              - cloudformation:ValidateTemplate
+              - cloudformation:CreateChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ListExports
+            Resource: '*'
+
+          - Sid: BucketsDeArtefactosYDeLaApp
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:DeleteBucket
+              - s3:ListBucket
+              - s3:ListBucketVersions
+              - s3:GetBucketPolicy
+              - s3:PutBucketPolicy
+              - s3:DeleteBucketPolicy
+              - s3:GetBucketTagging
+              - s3:PutBucketTagging
+              - s3:GetBucketVersioning
+              - s3:PutBucketVersioning
+              - s3:GetBucketPublicAccessBlock
+              - s3:PutBucketPublicAccessBlock
+              - s3:GetBucketOwnershipControls
+              - s3:PutBucketOwnershipControls
+              - s3:GetBucketCORS
+              - s3:PutBucketCORS
+              - s3:GetEncryptionConfiguration
+              - s3:PutEncryptionConfiguration
+              - s3:GetLifecycleConfiguration
+              - s3:PutLifecycleConfiguration
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${ServiceName}-*'
+              - !Sub 'arn:aws:s3:::${ServiceName}-*/*'
+              - 'arn:aws:s3:::serverless-framework-deployments-*'
+              - 'arn:aws:s3:::serverless-framework-deployments-*/*'
+
+          - Sid: Lambda
+            Effect: Allow
+            Action: ['lambda:*']
+            Resource: '*'
+
+          - Sid: ApiGateway
+            Effect: Allow
+            Action: ['apigateway:*']
+            Resource: '*'
+
+          - Sid: Logs
+            Effect: Allow
+            Action: ['logs:*']
+            Resource: '*'
+
+          - Sid: DynamoDB
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:UpdateTable
+              - dynamodb:DescribeTable
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:DescribeContinuousBackups
+              - dynamodb:UpdateContinuousBackups
+              - dynamodb:ListTagsOfResource
+              - dynamodb:TagResource
+              - dynamodb:UntagResource
+              - dynamodb:ListTables
+            Resource: '*'
+
+          - Sid: Cognito
+            Effect: Allow
+            Action: ['cognito-idp:*']
+            Resource: '*'
+
+          - Sid: CloudFront
+            Effect: Allow
+            Action:
+              - cloudfront:CreateDistribution
+              - cloudfront:UpdateDistribution
+              - cloudfront:DeleteDistribution
+              - cloudfront:GetDistribution
+              - cloudfront:GetDistributionConfig
+              - cloudfront:ListDistributions
+              - cloudfront:TagResource
+              - cloudfront:CreateOriginAccessControl
+              - cloudfront:UpdateOriginAccessControl
+              - cloudfront:DeleteOriginAccessControl
+              - cloudfront:GetOriginAccessControl
+              - cloudfront:CreateInvalidation
+            Resource: '*'
+
+          - Sid: ParametrosEnSSM
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+            Resource:
+              - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/${ServiceName}/*'
+              # Serverless v4 guarda ahi el nombre de su bucket de artefactos.
+              - !Sub 'arn:aws:ssm:*:${AWS::AccountId}:parameter/serverless-framework/*'
+
+          - Sid: DescifrarSecretos
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'ssm.${AWS::Region}.amazonaws.com'
+
+          - Sid: RolesDelServicio
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:PassRole
+              - iam:TagRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+            Resource:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-*'
+
+  # -- Roles que asume el CI -------------------------------------------------
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Condition: HasGitHub
+    Properties:
+      RoleName: !Sub '${ServiceName}-github-deploy'
+      Description: Rol que asume GitHub Actions por OIDC para desplegar.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+              StringLike:
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubRepo}:${GitHubRefFilter}'
+      ManagedPolicyArns:
+        - !Ref DeployPolicy
+
+  GitLabDeployRole:
+    Type: AWS::IAM::Role
+    Condition: HasGitLab
+    Properties:
+      RoleName: !Sub '${ServiceName}-gitlab-deploy'
+      Description: Rol que asume GitLab CI por OIDC para desplegar.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/${GitLabHost}'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringLike:
+                !Sub '${GitLabHost}:sub': !Sub 'project_path:${GitLabProject}:ref_type:branch:ref:*'
+              StringEquals:
+                !Sub '${GitLabHost}:aud': !Sub 'https://${GitLabHost}'
+      ManagedPolicyArns:
+        - !Ref DeployPolicy
+
+  # -- Despliegue manual desde el equipo de una persona ----------------------
+  # Mismos permisos que el CI, pero asumidos: la persona no lleva encima una
+  # identidad con permiso para tocar produccion, la asume cuando la necesita y
+  # la sesion caduca sola.
+  DeveloperDeployRole:
+    Type: AWS::IAM::Role
+    Condition: HasDevelopers
+    Properties:
+      RoleName: !Sub '${ServiceName}-developer-deploy'
+      Description: Rol que asume una persona para desplegar a mano.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref DeveloperPrincipals
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref DeployPolicy
+
+Outputs:
+  DeveloperDeployRoleArn:
+    Condition: HasDevelopers
+    Description: >
+      Ponerlo como role_arn en el perfil de ~/.aws/config que apunte .aws.env.
+    Value: !GetAtt DeveloperDeployRole.Arn
+
+  DeployPolicyArn:
+    Description: Politica de despliegue reutilizable (la importa infra/codepipeline.yml).
+    Value: !Ref DeployPolicy
+    Export:
+      Name: !Sub '${ServiceName}-deploy-policy-arn'
+
+  GitHubDeployRoleArn:
+    Condition: HasGitHub
+    Description: Ponerlo en el secreto AWS_DEPLOY_ROLE_ARN del repositorio.
+    Value: !GetAtt GitHubDeployRole.Arn
+
+  GitLabDeployRoleArn:
+    Condition: HasGitLab
+    Description: Ponerlo en la variable AWS_DEPLOY_ROLE_ARN del proyecto.
+    Value: !GetAtt GitLabDeployRole.Arn

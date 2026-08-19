@@ -1,11 +1,15 @@
 import uuid
 from enum import Enum
 from decimal import Decimal
-from app.config import dynamodb
+from app.models import DynamoModel, GSI
 from app.schemas.bank_funds import CurrencyEnum
 from app.utils.time import get_current_time
 
-class UserBankFundsSchema:
+class UserBankFundsSchema(DynamoModel):
+    table_name = "UserBankFunds"
+    partition_key = "id"
+    indexes = (GSI("user_id"), GSI("bank_funds_id"))
+
     class StatusEnum(str, Enum):
       OPEN = "OPEN"
       CLOSED = "CLOSED"
@@ -48,5 +52,5 @@ class UserBankFundsSchema:
             created_at=data.get("created_at")
         )
 
-user_bank_funds_db = dynamodb.Table("UserBankFunds")
+user_bank_funds_db = UserBankFundsSchema.table
 __all__ = ["user_bank_funds_db", "UserBankFundsSchema"]

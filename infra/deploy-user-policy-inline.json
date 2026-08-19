@@ -1,0 +1,63 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Control",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:*",
+        "lambda:*",
+        "apigateway:*",
+        "logs:*",
+        "cognito-idp:*",
+        "cloudfront:*",
+        "codebuild:*",
+        "codepipeline:*",
+        "codeconnections:*",
+        "codestar-connections:*",
+        "sts:GetCallerIdentity",
+        "dynamodb:ListTables",
+        "s3:ListAllMyBuckets",
+        "iam:*OpenIDConnectProvider*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RecursosDelServicio",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:*",
+        "s3:*",
+        "sns:*",
+        "events:*",
+        "ssm:*",
+        "iam:*"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:*:<AWS_ACCOUNT_ID>:table/fastapi-app-*",
+        "arn:aws:dynamodb:*:<AWS_ACCOUNT_ID>:table/fastapi-app-*/index/*",
+        "arn:aws:s3:::fastapi-app-*",
+        "arn:aws:s3:::fastapi-app-*/*",
+        "arn:aws:s3:::serverless-framework-deployments-*",
+        "arn:aws:s3:::serverless-framework-deployments-*/*",
+        "arn:aws:sns:*:<AWS_ACCOUNT_ID>:fastapi-app-*",
+        "arn:aws:events:*:<AWS_ACCOUNT_ID>:rule/fastapi-app-*",
+        "arn:aws:ssm:*:<AWS_ACCOUNT_ID>:parameter/fastapi-app/*",
+        "arn:aws:iam::<AWS_ACCOUNT_ID>:role/fastapi-app-*",
+        "arn:aws:iam::<AWS_ACCOUNT_ID>:policy/fastapi-app-*",
+        "arn:aws:ssm:*:<AWS_ACCOUNT_ID>:parameter/serverless-framework/*"
+      ]
+    },
+    {
+      "Sid": "Kms",
+      "Effect": "Allow",
+      "Action": "kms:*",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.us-east-2.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

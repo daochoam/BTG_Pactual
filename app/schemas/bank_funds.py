@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 from enum import Enum
-from app.config import dynamodb
+from app.models import DynamoModel, GSI
 from app.utils.time import get_current_time
 
 class CurrencyEnum(str, Enum):
@@ -12,7 +12,11 @@ class CurrencyEnum(str, Enum):
     COL = "COP"
     BRA = "BRL"
 
-class BankFundsSchema:
+class BankFundsSchema(DynamoModel):
+    table_name = "BankFunds"
+    partition_key = "id"
+    indexes = (GSI("category_id"),)
+
     def __init__(self, name: str, category_id: str, min_amount: float, currency: CurrencyEnum = CurrencyEnum.COL, user_created: str = None, user_updated: str = None, created_at: str = None):
         self.id = str(uuid.uuid4())
         self.name = name
@@ -56,5 +60,5 @@ class BankFundsSchema:
             updated_at=data["updated_at"]
         )
 
-bank_funds_db = dynamodb.Table("BankFunds")
+bank_funds_db = BankFundsSchema.table
 __all__ = ["bank_funds_db", "BankFundsSchema"]

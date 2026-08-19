@@ -1,6 +1,27 @@
 {
+  "name": "BTG_Pactual_FastApi",
+  "private": true,
+  "scripts": {
+    "resources": "python scripts/generate_dynamodb_resources.py",
+    "resources:check": "python scripts/generate_dynamodb_resources.py --check",
+    "predeploy": "npm run resources",
+    "deploy": "node scripts/with-aws-env.js npx serverless deploy --stage prod",
+    "predeploy:dev": "npm run resources",
+    "deploy:dev": "node scripts/with-aws-env.js npx serverless deploy --stage dev",
+    "prepackage": "npm run resources",
+    "package": "node scripts/with-aws-env.js npx serverless package --stage prod",
+    "info": "node scripts/with-aws-env.js npx serverless info --stage prod",
+    "offline": "node scripts/with-aws-env.js npx serverless offline",
+    "remove": "node scripts/with-aws-env.js npx serverless remove --stage dev",
+    "bootstrap": "node scripts/with-aws-env.js aws cloudformation deploy --template-file infra/bootstrap.yml --stack-name fastapi-app-cicd-bootstrap --capabilities CAPABILITY_NAMED_IAM",
+    "pipeline": "node scripts/with-aws-env.js aws cloudformation deploy --template-file infra/codepipeline.yml --stack-name fastapi-app-pipeline --capabilities CAPABILITY_NAMED_IAM",
+    "test": "pytest -q",
+    "whoami": "node scripts/with-aws-env.js aws sts get-caller-identity",
+    "preflight": "python scripts/setup_aws.py --check",
+    "setup": "python scripts/setup_aws.py"
+  },
   "devDependencies": {
-    "serverless-dotenv-plugin": "^6.0.0",
+    "serverless": "^4.4.0",
     "serverless-offline": "^14.4.0",
     "serverless-python-requirements": "^6.1.2"
   }

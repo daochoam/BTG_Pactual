@@ -1,14 +1,19 @@
 import uuid
 from enum import Enum
 from decimal import Decimal
-from app.config import dynamodb
+from app.models import DynamoModel, GSI
 from app.schemas.bank_funds import CurrencyEnum
 from app.utils.time import get_current_time
 
-class UserSchema:
+class UserSchema(DynamoModel):
     """
     Schema para representar un usuario en DynamoDB.
     """
+
+    table_name = "Users"
+    partition_key = "id"
+    indexes = (GSI("email"), GSI("nit"))
+
     class RoleEnum(str, Enum):
         USER = "USER"
         ADMIN = "ADMIN"
@@ -70,5 +75,5 @@ class UserSchema:
             updated_at=data["updated_at"]
         )
 
-users_db = dynamodb.Table("Users")
+users_db = UserSchema.table
 __all__ = ["users_db", "UserSchema"]

@@ -1,0 +1,166 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage a desplegar
+        required: true
+        default: prod
+        type: choice
+        options: [dev, prod]
+
+# Necesario para pedir el token OIDC con el que se asume el rol de AWS.
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Pytest
+        run: pytest -q
+
+      - name: La plantilla de DynamoDB coincide con los modelos
+        run: python scripts/generate_dynamodb_resources.py --check
+
+  deploy:
+    name: Deploy (${{ github.ref_name }})
+    needs: test
+    # Los PR solo corren tests; desplegar es exclusivo de las ramas.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Asumir el rol de despliegue (OIDC, sin access keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Determinar stage
+        id: stage
+        run: |
+          if [ -n "${{ inputs.stage }}" ]; then
+            echo "value=${{ inputs.stage }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "value=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generar recursos DynamoDB desde los modelos
+        run: python scripts/generate_dynamodb_resources.py
+
+      - name: Deploy
+        run: npx serverless deploy --stage ${{ steps.stage.outputs.value }} --verbose
+        env:
+          # Los secretos (JWT, SES, SMTP) los lee serverless.yml de SSM
+          # Parameter Store con el rol asumido. Aqui solo van ajustes no
+          # sensibles: si se declararan como secretos de GitHub y alguno
+          # estuviera vacio, llegaria como cadena vacia y pisaria el de SSM.
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+          JWT_EXPIRE_MINUTES: '30'
+          JWT_ALGORITHM: HS256
+          TIME_ZONE: America/Bogota
+          CORS_ALLOWED_ORIGIN: ${{ vars.CORS_ALLOWED_ORIGIN || '*' }}
+
+      - name: Publicar salidas del stack
+        run: npx serverless info --stage ${{ steps.stage.outputs.value }} >> "$GITHUB_STEP_SUMMARY"
+        env:
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+
+  frontend:
+    name: Frontend a S3 + CloudFront
+    needs: deploy
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprobar si el repo trae frontend
+        id: check
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Sin carpeta frontend/: se omite la publicacion del sitio."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.exists == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.check.outputs.exists == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Sincronizar y invalidar cache
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          STAGE=${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+          STACK="fastapi-app-$STAGE"
+          BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='StaticSiteBucketName'].OutputValue" --output text)
+          DIST=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='StaticSiteDistributionId'].OutputValue" --output text)
+
+          # Los assets con hash se cachean para siempre; el index nunca.
+          aws s3 sync frontend/dist "s3://$BUCKET" --delete \
+            --cache-control 'public,max-age=31536000,immutable' \
+            --exclude index.html
+          aws s3 cp frontend/dist/index.html "s3://$BUCKET/index.html" \
+            --cache-control 'no-cache,no-store,must-revalidate'
+
+          aws cloudfront create-invalidation --distribution-id "$DIST" --paths '/*'
